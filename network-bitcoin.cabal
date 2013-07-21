@@ -57,6 +57,7 @@ Library
     network >= 2.3,
     text >= 0.11,
     vector >= 0.10,
+    time >= 1.4,
     base == 4.*
   
 Source-repository head

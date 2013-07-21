@@ -96,8 +96,12 @@ module Network.Bitcoin
     , ReceivedByAccount(..)
     , listReceivedByAccount
     , listReceivedByAccount'
-    -- , listTransactions
-    -- , listAccounts
+    , WalletTransaction(..)
+    , listTransactions
+    , listTransactions'
+    , listTransactions''
+    , listAccounts
+    , listAccounts'
     -- , listSinceBlock
     -- , getTransaction
     , backupWallet
