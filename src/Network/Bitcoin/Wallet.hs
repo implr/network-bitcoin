@@ -41,8 +41,12 @@ module Network.Bitcoin.Wallet ( Auth(..)
                               , ReceivedByAccount(..)
                               , listReceivedByAccount
                               , listReceivedByAccount'
-                              -- , listTransactions
-                              -- , listAccounts
+                              , WalletTransaction(..)
+                              , listTransactions
+                              , listTransactions'
+                              , listTransactions''
+                              , listAccounts
+                              , listAccounts'
                               -- , listSinceBlock
                               -- , getTransaction
                               , backupWallet
@@ -59,6 +63,9 @@ import Control.Monad
 import Data.Aeson as A
 import Data.Maybe
 import Data.Vector as V
+import Data.Time as Time
+import Data.Time.Clock.POSIX as PT
+import Data.HashMap.Strict as HM
 import Network.Bitcoin.Internal
 
 -- | A plethora of information about a bitcoind instance.
@@ -175,12 +182,12 @@ data AddressInfo = AddressInfo { -- | The address in question.
 
 -- | What a silly API.
 instance FromJSON AddressInfo where
-    parseJSON (A.Array a) | V.length a == 2 = AddressInfo <$> parseJSON (a ! 0)
-                                                          <*> parseJSON (a ! 1)
+    parseJSON (A.Array a) | V.length a == 2 = AddressInfo <$> parseJSON (a V.! 0)
+                                                          <*> parseJSON (a V.! 1)
                                                           <*> pure Nothing
-                          | V.length a == 3 = AddressInfo <$> parseJSON (a ! 0)
-                                                          <*> parseJSON (a ! 1)
-                                                          <*> (Just <$> parseJSON (a ! 2))
+                          | V.length a == 3 = AddressInfo <$> parseJSON (a V.! 0)
+                                                          <*> parseJSON (a V.! 1)
+                                                          <*> (Just <$> parseJSON (a V.! 2))
                           | otherwise       = mzero
     parseJSON _ = mzero
 
@@ -403,9 +410,83 @@ listReceivedByAccount' :: Auth
 listReceivedByAccount' auth minconf includeEmpty =
     callApi auth "listreceivedbyaccount" [ tj minconf, tj includeEmpty ]
 
--- TODO: listtransactions
---       listaccounts
---       listsinceblock
+data WalletTransaction =
+      MoveTransaction    { txnAccount :: Account
+                         , txnTime :: UTCTime
+                         , txnAmount :: BTC
+                         , txnOtherAccount :: Account
+                         , txnComment :: Text
+                         }
+    | SendTransaction    { txnAccount :: Account
+                         , txnAddress :: Address
+                         , txnTime :: UTCTime
+                         , txnTimeReceived :: UTCTime
+                         , txnAmount :: BTC
+                         , txnFee :: BTC
+                         , txnConfirmations :: Integer
+                         , txnId :: TransactionID
+                         }
+    | ReceiveTransaction { txnAccount :: Account
+                         , txnAddress :: Address
+                         , txnTime :: UTCTime
+                         , txnTimeReceived :: UTCTime
+                         , txnAmount :: BTC
+                         , txnConfirmations :: Integer
+                         , txnId :: TransactionID
+                         }
+    deriving ( Show, Read, Ord, Eq )
+
+instance FromJSON WalletTransaction where
+    parseJSON (Object o) = case (o HM.! "category") of
+            "move" -> MoveTransaction       <$> o .: "account"
+                                            <*> (unpackTime <$> o .: "time")
+                                            <*> o .: "amount"
+                                            <*> o .: "otheraccount"
+                                            <*> o .: "comment"
+            "send" -> SendTransaction       <$> o .: "account"
+                                            <*> o .: "address"
+                                            <*> (unpackTime <$> o .: "time")
+                                            <*> (unpackTime <$> o .: "timereceived")
+                                            <*> o .: "amount"
+                                            <*> o .: "fee"
+                                            <*> o .: "confirmations"
+                                            <*> o .: "txid"
+            "receive" -> ReceiveTransaction <$> o .: "account"
+                                            <*> o .: "address"
+                                            <*> (unpackTime <$> o .: "time")
+                                            <*> (unpackTime <$> o .: "timereceived")
+                                            <*> o .: "amount"
+                                            <*> o .: "confirmations"
+                                            <*> o .: "txid"
+            _ -> error "sorry"
+        where unpackTime = PT.posixSecondsToUTCTime . fromInteger
+    parseJSON _ = mzero
+
+listTransactions :: Auth -> IO (Vector WalletTransaction)
+listTransactions auth = listTransactions' auth "*"
+
+listTransactions' :: Auth -> Account -> IO (Vector WalletTransaction)
+listTransactions' auth account = listTransactions'' auth account 10 0
+
+listTransactions'' :: Auth
+                   -> Account
+                   -- ^ Account to check
+                   -> Int
+                   -- ^ Maximum number of transactions to return
+                   -> Int
+                   -- ^ Transaction to start from
+                   -> IO (Vector WalletTransaction)
+listTransactions'' auth account cnt from =
+    callApi auth "listtransactions" [ tj account, tj cnt, tj from ]
+
+listAccounts :: Auth -> IO (HashMap Account BTC)
+listAccounts auth = listAccounts' auth 1
+
+listAccounts' :: Auth -> Int -> IO (HashMap Account BTC)
+listAccounts' auth minconf =
+    callApi auth "listaccounts" [ tj minconf ]
+
+-- TODO: listsinceblock
 --       gettransaction
 --
 --       These functions are just way too complicated for me to write.
