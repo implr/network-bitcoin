@@ -47,8 +47,10 @@ module Network.Bitcoin.Wallet ( Auth(..)
                               , listTransactions''
                               , listAccounts
                               , listAccounts'
-                              -- , listSinceBlock
-                              -- , getTransaction
+                              , listSinceBlock
+                              , listSinceBlock'
+                              , listSinceBlock''
+                              , getTransaction
                               , backupWallet
                               , keyPoolRefill
                               , unlockWallet
@@ -61,12 +63,14 @@ module Network.Bitcoin.Wallet ( Auth(..)
 import Control.Applicative
 import Control.Monad
 import Data.Aeson as A
+import Data.Aeson.Types as AT
 import Data.Maybe
 import Data.Vector as V
 import Data.Time as Time
 import Data.Time.Clock.POSIX as PT
 import Data.HashMap.Strict as HM
 import Network.Bitcoin.Internal
+import Network.Bitcoin.BlockChain (BlockHash)
 
 -- | A plethora of information about a bitcoind instance.
 data BitcoindInfo =
@@ -410,6 +414,8 @@ listReceivedByAccount' :: Auth
 listReceivedByAccount' auth minconf includeEmpty =
     callApi auth "listreceivedbyaccount" [ tj minconf, tj includeEmpty ]
 
+-- TODO: txnFee would conflict with Mining.Transaction
+-- there should be a better way to deal with this
 data WalletTransaction =
       MoveTransaction    { txnAccount :: Account
                          , txnTime :: UTCTime
@@ -422,9 +428,10 @@ data WalletTransaction =
                          , txnTime :: UTCTime
                          , txnTimeReceived :: UTCTime
                          , txnAmount :: BTC
-                         , txnFee :: BTC
+                         , txnFeeWallet :: BTC
                          , txnConfirmations :: Integer
                          , txnId :: TransactionID
+                         , txnBlockHash :: BlockHash
                          }
     | ReceiveTransaction { txnAccount :: Account
                          , txnAddress :: Address
@@ -433,11 +440,12 @@ data WalletTransaction =
                          , txnAmount :: BTC
                          , txnConfirmations :: Integer
                          , txnId :: TransactionID
+                         , txnBlockHash :: BlockHash
                          }
     deriving ( Show, Read, Ord, Eq )
 
 instance FromJSON WalletTransaction where
-    parseJSON (Object o) = case (o HM.! "category") of
+    parseJSON (Object o) = case o HM.! "category" of
             "move" -> MoveTransaction       <$> o .: "account"
                                             <*> (unpackTime <$> o .: "time")
                                             <*> o .: "amount"
@@ -451,6 +459,7 @@ instance FromJSON WalletTransaction where
                                             <*> o .: "fee"
                                             <*> o .: "confirmations"
                                             <*> o .: "txid"
+                                            <*> o .: "blockhash"
             "receive" -> ReceiveTransaction <$> o .: "account"
                                             <*> o .: "address"
                                             <*> (unpackTime <$> o .: "time")
@@ -458,13 +467,16 @@ instance FromJSON WalletTransaction where
                                             <*> o .: "amount"
                                             <*> o .: "confirmations"
                                             <*> o .: "txid"
+                                            <*> o .: "blockhash"
             _ -> error "sorry"
         where unpackTime = PT.posixSecondsToUTCTime . fromInteger
     parseJSON _ = mzero
 
+-- | List all transactions in wallet.
 listTransactions :: Auth -> IO (Vector WalletTransaction)
 listTransactions auth = listTransactions' auth "*"
 
+-- | List all transactions for a given account.
 listTransactions' :: Auth -> Account -> IO (Vector WalletTransaction)
 listTransactions' auth account = listTransactions'' auth account 10 0
 
@@ -479,18 +491,48 @@ listTransactions'' :: Auth
 listTransactions'' auth account cnt from =
     callApi auth "listtransactions" [ tj account, tj cnt, tj from ]
 
-listAccounts :: Auth -> IO (HashMap Account BTC)
-listAccounts auth = listAccounts' auth 1
 
-listAccounts' :: Auth -> Int -> IO (HashMap Account BTC)
+-- | List accounts and their balances.
+listAccounts' :: Auth -> Int 
+              -- ^ Miniumum number of confirmations required to count
+              -- a transaction
+              -> IO (HashMap Account BTC)
 listAccounts' auth minconf =
     callApi auth "listaccounts" [ tj minconf ]
 
--- TODO: listsinceblock
---       gettransaction
---
---       These functions are just way too complicated for me to write.
---       Patches welcome!
+-- | List accounts and their balances, counting transactions with
+-- at least one confirmation.
+listAccounts :: Auth -> IO (HashMap Account BTC)
+listAccounts auth = listAccounts' auth 1
+
+-- | Get a transaction with specified ID.
+getTransaction :: Auth -> TransactionID -> IO WalletTransaction
+getTransaction auth txid =
+        callApi auth "gettransaction" [tj txid]
+
+extractTx :: Object -> Vector WalletTransaction
+extractTx obj = case result of
+                          Success a -> a
+                          Error x -> error x
+      where result = AT.parse (.: "transactions") obj
+
+-- | List all transactions relevant to our wallet.
+-- This returns only blockchain transactions - moves are ommited.
+listSinceBlock :: Auth -> IO (Vector WalletTransaction)
+listSinceBlock auth = extractTx <$>
+        callApi auth "listsinceblock" []
+
+-- | List all relevant transactions since a specified block.
+listSinceBlock' :: Auth -> BlockHash -> IO (Vector WalletTransaction)
+listSinceBlock' auth hash = extractTx <$>
+        callApi auth "listsinceblock" [tj hash]
+
+listSinceBlock'' :: Auth -> BlockHash
+                -> Int
+                -- ^ Minimum number of confirmations to count a transaction
+                -> IO (Vector WalletTransaction)
+listSinceBlock'' auth hash minconf = extractTx <$>
+        callApi auth "listsinceblock" [tj hash, tj minconf]
 
 -- | Safely copies wallet.dat to the given destination, which can be either a
 --   directory, or a path with filename.
